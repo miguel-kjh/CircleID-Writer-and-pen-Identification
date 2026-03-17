@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from src.config import Config
 from src.data.dataset import CircleDataset
-from src.models.resnet import build_model
+from src.models import _REGISTRY, build_model
 from src.models.train import predict
 
 
@@ -23,7 +23,7 @@ def parse_args() -> Config:
     cfg = Config()
     parser = argparse.ArgumentParser(description="Predict CircleID baseline")
     parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
-    parser.add_argument("--model",       default=cfg.MODEL)
+    parser.add_argument("--model",       choices=list(_REGISTRY), default=cfg.MODEL)
     parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
     parser.add_argument("--img-size",    type=int,   default=cfg.IMG_SIZE)
     parser.add_argument("--threshold",   type=float, default=cfg.WRITER_UNKNOWN_THRESHOLD)
@@ -62,7 +62,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = build_model(num_classes=len(label_map)).to(device)
+    model = build_model(cfg.MODEL, num_classes=len(label_map)).to(device)
     model_state = torch.load(cfg.best_ckpt_path, map_location=device)
     model.load_state_dict(model_state["model"])
     print(f"Loaded checkpoint: {cfg.best_ckpt_path}")

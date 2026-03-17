@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from src.config import Config
 from src.data.dataset import CircleDataset
 from src.data.utils import generate_label_maps, random_split
-from src.models.resnet import build_model
+from src.models import _REGISTRY, build_model
 from src.models.train import evaluate, predict, train_epoch
 from src.utils import set_seeds
 
@@ -27,7 +27,7 @@ def parse_args() -> Config:
     cfg = Config()
     parser = argparse.ArgumentParser(description="Train CircleID baseline")
     parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
-    parser.add_argument("--model",       default=cfg.MODEL)
+    parser.add_argument("--model",       choices=list(_REGISTRY), default=cfg.MODEL)
     parser.add_argument("--epochs",      type=int,   default=cfg.EPOCHS)
     parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
     parser.add_argument("--lr",          type=float, default=cfg.LEARNING_RATE)
@@ -90,7 +90,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = build_model(num_classes=len(label_map)).to(device)
+    model = build_model(cfg.MODEL, num_classes=len(label_map)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.LEARNING_RATE)
 
     train_ds = CircleDataset(train_df, img_root=cfg.IMAGE_DIR, return_label=True, augment=True, img_size=cfg.IMG_SIZE)
