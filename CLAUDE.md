@@ -10,18 +10,24 @@ Two tasks:
 - **Writer Identification**: Classify which writer (W01–W51) wrote the sample, with an "unknown writer" option (`-1`) via confidence threshold.
 - **Pen Classification**: Classify which pen (1–8) was used.
 
-## Running the Notebook
+## Commands
 
 ```bash
+# Training
+python train.py                                      # writer task, resnet18, defaults
+python train.py --task pen
+python train.py --task writer --model resnet18 --epochs 20 --batch-size 64 --lr 1e-4
+
+# Inference (requires a prior training run)
+python predict.py                                    # writer task, resnet18
+python predict.py --task pen --model resnet18
+
+# Notebook (legacy baseline)
 pip install numpy pandas pillow torch torchvision tqdm
 jupyter notebook baseline.ipynb
 ```
 
-The notebook is designed to run both locally and on Kaggle. Switch paths via the `DATASET_DIR` / `OUTPUT_DIR` config variables at the top.
-
 ## Data Layout
-
-Local layout (Kaggle mounts the same files under `/kaggle/input/<competition-slug>/`):
 
 ```
 dataset/
@@ -30,34 +36,55 @@ dataset/
     additional_train.csv   # same schema; writer_id=-1 means unknown writer
     test.csv               # image_id, image_path (no labels)
     sample_submission.csv  # image_id, writer_id (example format)
-  images/                  # PNG handwriting samples (00001.png, etc.)
-  process/                 # placeholder for any preprocessed/derived data
-results/                   # checkpoints (*.pt), logs (log_*.json), submission CSVs
+  images/                  # PNG handwriting samples
+results/                   # run directories with checkpoints, logs, submission CSVs
 ```
 
-Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to `DATASET_DIR`.
+Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to `dataset/` (the `IMAGE_DIR` in `Config`), while CSVs themselves live in `dataset/raw/`.
 
-> **Note:** `DATASET_DIR` defaults to `"dataset/"` in the notebook. Since the CSVs live in `dataset/raw/`, you must either set `DATASET_DIR = "dataset/raw/"` or copy/symlink the CSVs into `dataset/` before running. The `image_path` values in the CSVs must still resolve correctly under whatever `DATASET_DIR` is set to.
+## Architecture
 
-## Notebook Architecture (`baseline.ipynb`)
+The codebase is a modular refactor of `baseline.ipynb` into `train.py` / `predict.py` backed by `src/`.
 
-The notebook is a single-file pipeline:
+### Configuration (`src/config.py`)
 
-1. **Config block** – `TASK`, `DATASET_DIR`, `OUTPUT_DIR`, hyperparameters (`EPOCHS`, `BATCH_SIZE`, `LEARNING_RATE`, `IMG_SIZE`, `SEED`, `VAL_FRAC`, `WRITER_UNKNOWN_THRESHOLD`).
-2. **Utilities** – `set_seeds`, `generate_label_maps`, `random_split`.
-3. **`CircleDataset`** – `torch.utils.data.Dataset` that reads images from disk via paths in the CSV, applies ImageNet normalization (from `ResNet18_Weights.DEFAULT`), and optionally applies augmentation (random rotation ±10°).
-4. **Model / training** – `build_model` replaces ResNet18's `fc` head with a linear layer sized to the number of classes. `train_epoch` / `evaluate` / `predict` are standard PyTorch loops.
-5. **Training loop** – Saves best checkpoint by validation accuracy (`baseline_{task}_best.pt`) and last checkpoint (`baseline_{task}.pt`). Also writes a `log_{task}.json` with label maps.
-6. **Submission** – `predict()` applies a softmax confidence threshold for unknown-writer detection (writer task only). Outputs `submission_writer.csv` or `submission_pen.csv`.
+`Config` is a class with class-level attributes and dynamic `@property` methods:
+- `run_dir` generates a deterministic path like `resnet18_writer_e10_bs128_lr3e-4_img224_seed0/` under `OUTPUT_DIR`
+- `best_ckpt_path` / `ckpt_path` / `log_path` all resolve under `run_dir`
+- `setup()` creates the output directories
+
+`train.py` and `predict.py` parse CLI args and mutate a `Config` instance before use.
+
+### Model Registry (`src/models/`)
+
+Models follow a registry pattern:
+- `BaseModel(nn.Module)` requires a `NAME` class attribute
+- `_REGISTRY` in `src/models/__init__.py` maps name → class
+- `build_model(name, num_classes)` is the factory used by both scripts
+
+To add a new model: subclass `BaseModel`, set `NAME`, add to `_REGISTRY`. No changes needed in `train.py`/`predict.py`.
+
+### Training Loop (`src/models/train.py`)
+
+`train_epoch`, `evaluate`, and `predict` are standalone functions (not methods). `predict` applies softmax confidence thresholding for the writer task (below `WRITER_UNKNOWN_THRESHOLD` → predicts `-1`); pen task uses argmax.
+
+### Data (`src/data/`)
+
+- `CircleDataset` resolves image paths as `img_root / image_path` from the CSV
+- ImageNet normalization from `ResNet18_Weights.DEFAULT`; train split uses random rotation ±10° augmentation
+- `random_split` is **not** stratified by writer — some writers may be absent from validation
+
+### Experiment Tracking
+
+wandb is integrated in `train.py` (project: `"circleid"`). Run name mirrors `run_dir`. Metrics logged: `train/loss`, `val/loss`, `val/acc` per epoch, plus `best_val_acc` as a summary.
 
 ## Key Design Decisions
 
-- **Unknown writer**: Samples with softmax confidence < `WRITER_UNKNOWN_THRESHOLD` are predicted as `-1`. This threshold is the primary baseline heuristic to improve.
-- **`additional_train.csv`** contains images where `writer_id=-1` (genuinely unknown writers) — useful for training the unknown-writer detector but not used in the current baseline.
-- Label maps are built from `train.csv` only; `idx_map` (int → label string) is used at prediction time.
-- The model always predicts from `BEST_CKPT_PATH` (best val acc), not the last checkpoint.
-- `random_split` shuffles globally before splitting — it is **not** writer-stratified. This means some writers may be underrepresented in validation; consider stratified splitting for more reliable val accuracy estimates.
+- **Unknown writer**: Samples with softmax confidence < `WRITER_UNKNOWN_THRESHOLD` (default 0.9) are predicted as `-1`. The threshold is the primary heuristic to tune.
+- **`additional_train.csv`** contains samples with `writer_id=-1` (genuinely unknown writers) — not used in the current baseline but relevant for training an unknown-writer detector.
+- Label maps (`label_map` str→int, `idx_map` int→str) are built from `train.csv` only and persisted in `log.json` so inference uses the same indices as training.
+- Inference always loads `best_ckpt_path` (best val acc checkpoint), not the last checkpoint.
 
 ## Baseline Results
 
-The writer task baseline (10 epochs, ResNet18, `LEARNING_RATE=3e-4`, `BATCH_SIZE=128`) achieved **~92% validation accuracy** on a random 80/20 split of `train.csv`. Checkpoints are in `results/`.
+Writer task (10 epochs, ResNet18, `lr=3e-4`, `batch_size=128`): **~92% validation accuracy** on a random 80/20 split of `train.csv`.
