@@ -82,10 +82,10 @@ def main():
 
     if cfg.TASK == "writer":
         sub = pd.DataFrame(predictions, columns=["image_id", "writer_id"])
-        out_name = os.path.join(cfg.OUTPUT_DIR, "submission_writer.csv")
+        out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_writer_{cfg.MODEL}.csv")
     else:
         sub = pd.DataFrame(predictions, columns=["image_id", "pen_id"])
-        out_name = os.path.join(cfg.OUTPUT_DIR, "submission_pen.csv")
+        out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_pen_{cfg.MODEL}.csv")
 
     sub.to_csv(out_name, index=False)
     print(f"Wrote: {out_name}")

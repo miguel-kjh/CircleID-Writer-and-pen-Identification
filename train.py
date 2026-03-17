@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 import torch
+import wandb
 from torch.utils.data import DataLoader
 
 from src.config import Config
@@ -88,6 +89,23 @@ def main():
     Path(cfg.log_path).write_text(json.dumps(log, indent=4), encoding="utf-8")
     print(f"Saved log to {cfg.log_path}")
 
+    wandb.init(
+        project="circleid",
+        name=os.path.basename(cfg.run_dir),
+        config={
+            "task": cfg.TASK,
+            "model": cfg.MODEL,
+            "epochs": cfg.EPOCHS,
+            "batch_size": cfg.BATCH_SIZE,
+            "learning_rate": cfg.LEARNING_RATE,
+            "img_size": cfg.IMG_SIZE,
+            "seed": cfg.SEED,
+            "val_frac": cfg.VAL_FRAC,
+            "writer_unknown_threshold": cfg.WRITER_UNKNOWN_THRESHOLD,
+            "num_classes": len(label_map),
+        },
+    )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = build_model(cfg.MODEL, num_classes=len(label_map)).to(device)
@@ -117,9 +135,14 @@ def main():
         val_loss, val_acc = evaluate(model, val_loader, device)
         print(f"[Epoch {epoch + 1}/{cfg.EPOCHS}] Train loss: {train_loss:.4f} | val loss: {val_loss:.4f} | val acc: {val_acc:.4f}")
 
+        wandb.log({"train/loss": train_loss, "val/loss": val_loss, "val/acc": val_acc}, step=epoch + 1)
+
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save({"model": model.state_dict()}, cfg.best_ckpt_path)
+
+    wandb.summary["best_val_acc"] = best_acc
+    wandb.finish()
 
     torch.save({"model": model.state_dict()}, cfg.ckpt_path)
     print(f"Saved last checkpoint: {cfg.ckpt_path}")
@@ -140,12 +163,14 @@ def main():
 
     predictions = predict(model, test_loader, device, idx_map, cfg.TASK, cfg.WRITER_UNKNOWN_THRESHOLD)
 
+    name_model = os.path.basename(cfg.run_dir)
+
     if cfg.TASK == "writer":
         sub = pd.DataFrame(predictions, columns=["image_id", "writer_id"])
-        out_name = os.path.join(cfg.OUTPUT_DIR, "submission_writer.csv")
+        out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_writer_{name_model}.csv")
     else:
         sub = pd.DataFrame(predictions, columns=["image_id", "pen_id"])
-        out_name = os.path.join(cfg.OUTPUT_DIR, "submission_pen.csv")
+        out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_pen_{name_model}.csv")
 
     sub.to_csv(out_name, index=False)
     print(f"Wrote: {out_name}")
