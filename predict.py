@@ -23,6 +23,7 @@ def parse_args() -> Config:
     cfg = Config()
     parser = argparse.ArgumentParser(description="Predict CircleID baseline")
     parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
+    parser.add_argument("--model",       default=cfg.MODEL)
     parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
     parser.add_argument("--img-size",    type=int,   default=cfg.IMG_SIZE)
     parser.add_argument("--threshold",   type=float, default=cfg.WRITER_UNKNOWN_THRESHOLD)
@@ -32,6 +33,7 @@ def parse_args() -> Config:
     args = parser.parse_args()
 
     cfg.TASK                     = args.task
+    cfg.MODEL                    = args.model
     cfg.BATCH_SIZE               = args.batch_size
     cfg.IMG_SIZE                 = args.img_size
     cfg.WRITER_UNKNOWN_THRESHOLD = args.threshold

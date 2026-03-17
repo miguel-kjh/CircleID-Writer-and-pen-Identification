@@ -5,6 +5,9 @@ class Config:
     # Task
     TASK: str = "writer"
 
+    # Model
+    MODEL: str = "resnet18"
+
     # Paths
     DATASET_DIR: str = "dataset/raw/"
     IMAGE_DIR: str = "dataset/"
@@ -21,18 +24,28 @@ class Config:
     # Writer task only: Below this confidence, writers are predicted as unknown (-1)
     WRITER_UNKNOWN_THRESHOLD: float = 0.9
 
+    @property
+    def run_dir(self) -> str:
+        lr_str = f"{self.LEARNING_RATE:.0e}".replace("e-0", "e-").replace("e+0", "e+")
+        name = (
+            f"{self.MODEL}_{self.TASK}"
+            f"_e{self.EPOCHS}_bs{self.BATCH_SIZE}_lr{lr_str}"
+            f"_img{self.IMG_SIZE}_seed{self.SEED}"
+        )
+        return os.path.join(self.OUTPUT_DIR, name)
+
     def setup(self):
         """Call after all attributes are set to create output dirs."""
-        os.makedirs(self.OUTPUT_DIR, exist_ok=True)
+        os.makedirs(self.run_dir, exist_ok=True)
 
     @property
     def ckpt_path(self) -> str:
-        return f"{self.OUTPUT_DIR}/baseline_{self.TASK}.pt"
+        return os.path.join(self.run_dir, "checkpoint.pt")
 
     @property
     def best_ckpt_path(self) -> str:
-        return f"{self.OUTPUT_DIR}/baseline_{self.TASK}_best.pt"
+        return os.path.join(self.run_dir, "checkpoint_best.pt")
 
     @property
     def log_path(self) -> str:
-        return f"{self.OUTPUT_DIR}/log_{self.TASK}.json"
+        return os.path.join(self.run_dir, "log.json")

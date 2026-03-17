@@ -27,6 +27,7 @@ def parse_args() -> Config:
     cfg = Config()
     parser = argparse.ArgumentParser(description="Train CircleID baseline")
     parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
+    parser.add_argument("--model",       default=cfg.MODEL)
     parser.add_argument("--epochs",      type=int,   default=cfg.EPOCHS)
     parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
     parser.add_argument("--lr",          type=float, default=cfg.LEARNING_RATE)
@@ -40,6 +41,7 @@ def parse_args() -> Config:
     args = parser.parse_args()
 
     cfg.TASK                     = args.task
+    cfg.MODEL                    = args.model
     cfg.EPOCHS                   = args.epochs
     cfg.BATCH_SIZE               = args.batch_size
     cfg.LEARNING_RATE            = args.lr
@@ -56,6 +58,7 @@ def parse_args() -> Config:
 
 def main():
     cfg = parse_args()
+    print(f"Run dir: {cfg.run_dir}")
 
     set_seeds(cfg.SEED)
 
