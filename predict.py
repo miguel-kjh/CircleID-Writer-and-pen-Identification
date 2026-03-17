@@ -13,33 +13,45 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-import src.config as cfg
+from src.config import Config
 from src.data.dataset import CircleDataset
 from src.models.resnet import build_model
 from src.models.train import predict
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["writer", "pen"], default=None,
-                        help="Override config.TASK")
-    return parser.parse_args()
+def parse_args() -> Config:
+    cfg = Config()
+    parser = argparse.ArgumentParser(description="Predict CircleID baseline")
+    parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
+    parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
+    parser.add_argument("--img-size",    type=int,   default=cfg.IMG_SIZE)
+    parser.add_argument("--threshold",   type=float, default=cfg.WRITER_UNKNOWN_THRESHOLD)
+    parser.add_argument("--dataset-dir", default=cfg.DATASET_DIR)
+    parser.add_argument("--image-dir",   default=cfg.IMAGE_DIR)
+    parser.add_argument("--output-dir",  default=cfg.OUTPUT_DIR)
+    args = parser.parse_args()
+
+    cfg.TASK                     = args.task
+    cfg.BATCH_SIZE               = args.batch_size
+    cfg.IMG_SIZE                 = args.img_size
+    cfg.WRITER_UNKNOWN_THRESHOLD = args.threshold
+    cfg.DATASET_DIR              = args.dataset_dir
+    cfg.IMAGE_DIR                = args.image_dir
+    cfg.OUTPUT_DIR               = args.output_dir
+    cfg.setup()
+    return cfg
 
 
 def main():
-    args = parse_args()
-    task = args.task if args.task is not None else cfg.TASK
+    cfg = parse_args()
 
-    best_ckpt_path = f"{cfg.OUTPUT_DIR}/baseline_{task}_best.pt"
-    log_path       = f"{cfg.OUTPUT_DIR}/log_{task}.json"
-
-    if not os.path.exists(best_ckpt_path):
+    if not os.path.exists(cfg.best_ckpt_path):
         raise FileNotFoundError(
-            f"Checkpoint not found: {best_ckpt_path}\n"
-            f"Run `python train.py --task {task}` first."
+            f"Checkpoint not found: {cfg.best_ckpt_path}\n"
+            f"Run `python train.py --task {cfg.TASK}` first."
         )
 
-    with open(log_path, encoding="utf-8") as f:
+    with open(cfg.log_path, encoding="utf-8") as f:
         log = json.load(f)
 
     idx_map = {int(k): v for k, v in log["idx_map"].items()}
@@ -49,9 +61,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = build_model(num_classes=len(label_map)).to(device)
-    model_state = torch.load(best_ckpt_path, map_location=device)
+    model_state = torch.load(cfg.best_ckpt_path, map_location=device)
     model.load_state_dict(model_state["model"])
-    print(f"Loaded checkpoint: {best_ckpt_path}")
+    print(f"Loaded checkpoint: {cfg.best_ckpt_path}")
 
     test_df = pd.read_csv(os.path.join(cfg.DATASET_DIR, "test.csv"))
 
@@ -64,9 +76,9 @@ def main():
         drop_last=False,
     )
 
-    predictions = predict(model, test_loader, device, idx_map, task, writer_unknown_threshold)
+    predictions = predict(model, test_loader, device, idx_map, cfg.TASK, writer_unknown_threshold)
 
-    if task == "writer":
+    if cfg.TASK == "writer":
         sub = pd.DataFrame(predictions, columns=["image_id", "writer_id"])
         out_name = os.path.join(cfg.OUTPUT_DIR, "submission_writer.csv")
     else:

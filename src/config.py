@@ -1,27 +1,38 @@
 import os
 
-TASK = "writer"  # "writer" or "pen"
 
-DATASET_DIR = "dataset/raw/"
-IMAGE_DIR = "dataset/"
-OUTPUT_DIR = "results/"
+class Config:
+    # Task
+    TASK: str = "writer"
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Paths
+    DATASET_DIR: str = "dataset/raw/"
+    IMAGE_DIR: str = "dataset/"
+    OUTPUT_DIR: str = "results/"
 
-# Training hyperparameters
-EPOCHS = 10
-BATCH_SIZE = 128
-LEARNING_RATE = 3e-4
-IMG_SIZE = 224
-SEED = 0
+    # Hyperparameters
+    EPOCHS: int = 10
+    BATCH_SIZE: int = 128
+    LEARNING_RATE: float = 3e-4
+    IMG_SIZE: int = 224
+    SEED: int = 0
+    VAL_FRAC: float = 0.2
 
-# Holdout validation fraction (set 0.0 to disable)
-VAL_FRAC = 0.2
+    # Writer task only: Below this confidence, writers are predicted as unknown (-1)
+    WRITER_UNKNOWN_THRESHOLD: float = 0.9
 
-# Writer task only: Below this confidence, writers are predicted as unknown (-1)
-WRITER_UNKNOWN_THRESHOLD = 0.9
+    def setup(self):
+        """Call after all attributes are set to create output dirs."""
+        os.makedirs(self.OUTPUT_DIR, exist_ok=True)
 
-# Output paths
-CKPT_PATH      = f"{OUTPUT_DIR}/baseline_{TASK}.pt"
-BEST_CKPT_PATH = f"{OUTPUT_DIR}/baseline_{TASK}_best.pt"
-LOG_PATH       = f"{OUTPUT_DIR}/log_{TASK}.json"
+    @property
+    def ckpt_path(self) -> str:
+        return f"{self.OUTPUT_DIR}/baseline_{self.TASK}.pt"
+
+    @property
+    def best_ckpt_path(self) -> str:
+        return f"{self.OUTPUT_DIR}/baseline_{self.TASK}_best.pt"
+
+    @property
+    def log_path(self) -> str:
+        return f"{self.OUTPUT_DIR}/log_{self.TASK}.json"

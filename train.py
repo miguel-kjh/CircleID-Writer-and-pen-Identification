@@ -3,6 +3,7 @@
 Usage:
     python train.py
     python train.py --task pen
+    python train.py --task writer --epochs 1
 """
 
 import argparse
@@ -14,7 +15,7 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-import src.config as cfg
+from src.config import Config
 from src.data.dataset import CircleDataset
 from src.data.utils import generate_label_maps, random_split
 from src.models.resnet import build_model
@@ -22,51 +23,67 @@ from src.models.train import evaluate, predict, train_epoch
 from src.utils import set_seeds
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["writer", "pen"], default=None,
-                        help="Override config.TASK")
-    return parser.parse_args()
+def parse_args() -> Config:
+    cfg = Config()
+    parser = argparse.ArgumentParser(description="Train CircleID baseline")
+    parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
+    parser.add_argument("--epochs",      type=int,   default=cfg.EPOCHS)
+    parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
+    parser.add_argument("--lr",          type=float, default=cfg.LEARNING_RATE)
+    parser.add_argument("--img-size",    type=int,   default=cfg.IMG_SIZE)
+    parser.add_argument("--seed",        type=int,   default=cfg.SEED)
+    parser.add_argument("--val-frac",    type=float, default=cfg.VAL_FRAC)
+    parser.add_argument("--threshold",   type=float, default=cfg.WRITER_UNKNOWN_THRESHOLD)
+    parser.add_argument("--dataset-dir", default=cfg.DATASET_DIR)
+    parser.add_argument("--image-dir",   default=cfg.IMAGE_DIR)
+    parser.add_argument("--output-dir",  default=cfg.OUTPUT_DIR)
+    args = parser.parse_args()
+
+    cfg.TASK                     = args.task
+    cfg.EPOCHS                   = args.epochs
+    cfg.BATCH_SIZE               = args.batch_size
+    cfg.LEARNING_RATE            = args.lr
+    cfg.IMG_SIZE                 = args.img_size
+    cfg.SEED                     = args.seed
+    cfg.VAL_FRAC                 = args.val_frac
+    cfg.WRITER_UNKNOWN_THRESHOLD = args.threshold
+    cfg.DATASET_DIR              = args.dataset_dir
+    cfg.IMAGE_DIR                = args.image_dir
+    cfg.OUTPUT_DIR               = args.output_dir
+    cfg.setup()
+    return cfg
 
 
 def main():
-    args = parse_args()
-
-    # Allow CLI override of task
-    task = args.task if args.task is not None else cfg.TASK
-
-    # Re-derive output paths if task was overridden
-    ckpt_path      = f"{cfg.OUTPUT_DIR}/baseline_{task}.pt"
-    best_ckpt_path = f"{cfg.OUTPUT_DIR}/baseline_{task}_best.pt"
-    log_path       = f"{cfg.OUTPUT_DIR}/log_{task}.json"
+    cfg = parse_args()
 
     set_seeds(cfg.SEED)
 
     train_df = pd.read_csv(os.path.join(cfg.DATASET_DIR, "train.csv"))
     test_df  = pd.read_csv(os.path.join(cfg.DATASET_DIR, "test.csv"))
 
-    label_map, idx_map = generate_label_maps(train_df, task)
+    label_map, idx_map = generate_label_maps(train_df, cfg.TASK)
 
-    if task == "writer":
+    if cfg.TASK == "writer":
         train_df["y"] = train_df["writer_id"].astype(str).map(label_map).astype(int)
     else:
         train_df["y"] = train_df["pen_id"].astype(str).map(label_map).astype(int)
 
     train_df, val_df = random_split(train_df, val_frac=cfg.VAL_FRAC, seed=cfg.SEED)
     print(f"Train samples: {len(train_df)} | Validation samples: {len(val_df)} ({cfg.VAL_FRAC:.2f})")
-    if task == "writer":
+    if cfg.TASK == "writer":
         print("Note: Validation accuracy is calculated only on known writers.")
 
     log = {
-        "task": task,
+        "task": cfg.TASK,
         "seed": cfg.SEED,
         "label_map": label_map,
         "idx_map": idx_map,
         "writer_unknown_threshold": cfg.WRITER_UNKNOWN_THRESHOLD,
         "val_frac": cfg.VAL_FRAC,
     }
-    Path(log_path).write_text(json.dumps(log, indent=4), encoding="utf-8")
-    print(f"Saved log to {log_path}")
+    Path(cfg.log_path).write_text(json.dumps(log, indent=4), encoding="utf-8")
+    print(f"Saved log to {cfg.log_path}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -99,14 +116,14 @@ def main():
 
         if val_acc > best_acc:
             best_acc = val_acc
-            torch.save({"model": model.state_dict()}, best_ckpt_path)
+            torch.save({"model": model.state_dict()}, cfg.best_ckpt_path)
 
-    torch.save({"model": model.state_dict()}, ckpt_path)
-    print(f"Saved last checkpoint: {ckpt_path}")
-    print(f"Saved best checkpoint: {best_ckpt_path} (best val acc={best_acc:.4f})")
+    torch.save({"model": model.state_dict()}, cfg.ckpt_path)
+    print(f"Saved last checkpoint: {cfg.ckpt_path}")
+    print(f"Saved best checkpoint: {cfg.best_ckpt_path} (best val acc={best_acc:.4f})")
 
     # Generate submission from best checkpoint
-    model_state = torch.load(best_ckpt_path, map_location=device)
+    model_state = torch.load(cfg.best_ckpt_path, map_location=device)
     model.load_state_dict(model_state["model"])
 
     test_ds = CircleDataset(test_df, img_root=cfg.IMAGE_DIR, return_label=False, augment=False, img_size=cfg.IMG_SIZE)
@@ -118,9 +135,9 @@ def main():
         drop_last=False,
     )
 
-    predictions = predict(model, test_loader, device, idx_map, task, cfg.WRITER_UNKNOWN_THRESHOLD)
+    predictions = predict(model, test_loader, device, idx_map, cfg.TASK, cfg.WRITER_UNKNOWN_THRESHOLD)
 
-    if task == "writer":
+    if cfg.TASK == "writer":
         sub = pd.DataFrame(predictions, columns=["image_id", "writer_id"])
         out_name = os.path.join(cfg.OUTPUT_DIR, "submission_writer.csv")
     else:
