@@ -21,16 +21,23 @@ The notebook is designed to run both locally and on Kaggle. Switch paths via the
 
 ## Data Layout
 
+Local layout (Kaggle mounts the same files under `/kaggle/input/<competition-slug>/`):
+
 ```
-icdar-2026-circleid-writer-identification/
-  train.csv              # image_id, image_path, writer_id, pen_id
-  additional_train.csv   # same schema; writer_id=-1 means unknown writer
-  test.csv               # image_id, image_path (no labels)
-  sample_submission.csv  # image_id, writer_id (example format)
-  images/                # PNG handwriting samples (00001.png, etc.)
+dataset/
+  raw/
+    train.csv              # image_id, image_path, writer_id, pen_id
+    additional_train.csv   # same schema; writer_id=-1 means unknown writer
+    test.csv               # image_id, image_path (no labels)
+    sample_submission.csv  # image_id, writer_id (example format)
+  images/                  # PNG handwriting samples (00001.png, etc.)
+  process/                 # placeholder for any preprocessed/derived data
+results/                   # checkpoints (*.pt), logs (log_*.json), submission CSVs
 ```
 
-Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to the dataset root.
+Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to `DATASET_DIR`.
+
+> **Note:** `DATASET_DIR` defaults to `"dataset/"` in the notebook. Since the CSVs live in `dataset/raw/`, you must either set `DATASET_DIR = "dataset/raw/"` or copy/symlink the CSVs into `dataset/` before running. The `image_path` values in the CSVs must still resolve correctly under whatever `DATASET_DIR` is set to.
 
 ## Notebook Architecture (`baseline.ipynb`)
 
@@ -49,3 +56,8 @@ The notebook is a single-file pipeline:
 - **`additional_train.csv`** contains images where `writer_id=-1` (genuinely unknown writers) — useful for training the unknown-writer detector but not used in the current baseline.
 - Label maps are built from `train.csv` only; `idx_map` (int → label string) is used at prediction time.
 - The model always predicts from `BEST_CKPT_PATH` (best val acc), not the last checkpoint.
+- `random_split` shuffles globally before splitting — it is **not** writer-stratified. This means some writers may be underrepresented in validation; consider stratified splitting for more reliable val accuracy estimates.
+
+## Baseline Results
+
+The writer task baseline (10 epochs, ResNet18, `LEARNING_RATE=3e-4`, `BATCH_SIZE=128`) achieved **~92% validation accuracy** on a random 80/20 split of `train.csv`. Checkpoints are in `results/`.
