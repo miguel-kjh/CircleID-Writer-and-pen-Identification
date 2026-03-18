@@ -9,9 +9,13 @@ class Config:
     MODEL: str = "resnet18"
 
     # Paths
-    DATASET_DIR: str = "dataset/raw/"
+    DATASET: str = "raw"          # selects dataset/raw/ or dataset/raw_join/ etc.
     IMAGE_DIR: str = "dataset/"
     OUTPUT_DIR: str = "results/"
+
+    @property
+    def DATASET_DIR(self) -> str:
+        return os.path.join("dataset", self.DATASET) + "/"
 
     # Hyperparameters
     EPOCHS: int = 10
@@ -27,8 +31,9 @@ class Config:
     @property
     def run_dir(self) -> str:
         lr_str = f"{self.LEARNING_RATE:.0e}".replace("e-0", "e-").replace("e+0", "e+")
+        ds_tag = f"_ds{self.DATASET}" if self.DATASET != "raw" else ""
         name = (
-            f"{self.MODEL}_{self.TASK}"
+            f"{self.MODEL}_{self.TASK}{ds_tag}"
             f"_e{self.EPOCHS}_bs{self.BATCH_SIZE}_lr{lr_str}"
             f"_img{self.IMG_SIZE}_seed{self.SEED}"
         )

@@ -17,10 +17,12 @@ Two tasks:
 python train.py                                                        # writer task, resnet18, defaults
 python train.py --task pen
 python train.py --task writer --model resnet18 --epochs 20 --batch-size 64 --lr 1e-4
+python train.py --dataset raw_join                                     # use merged train+additional_train
 
 # Inference — must pass the same run-identifying flags as training to resolve run_dir
 python predict.py --task writer --epochs 20 --batch-size 64 --lr 1e-4
 python predict.py --task pen --model resnet18
+python predict.py --dataset raw_join                                   # must match training flag
 
 # Notebook (legacy baseline)
 pip install numpy pandas pillow torch torchvision tqdm pytorch-lightning
@@ -34,13 +36,18 @@ jupyter notebook baseline.ipynb
 ```
 dataset/
   raw/
-    train.csv              # image_id, image_path, writer_id, pen_id
-    additional_train.csv   # same schema; writer_id=-1 means unknown writer
+    train.csv              # image_id, image_path, writer_id, pen_id  (23 850 rows)
+    additional_train.csv   # same schema; writer_id=-1 means unknown writer (16 400 rows)
     test.csv               # image_id, image_path (no labels)
     sample_submission.csv  # image_id, writer_id (example format)
+  raw_join/
+    train.csv              # union of raw/train.csv + raw/additional_train.csv (40 250 rows)
+    test.csv               # symlink → raw/test.csv
   images/                  # PNG handwriting samples
 results/                   # run directories: checkpoints, log.json, submission CSVs
 ```
+
+Select a dataset with `--dataset raw` (default) or `--dataset raw_join`. The `run_dir` encodes `_ds{dataset}` when the dataset is not `raw`, so runs with different datasets never collide.
 
 Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to `dataset/` (`IMAGE_DIR` in `Config`); CSVs live in `dataset/raw/`.
 

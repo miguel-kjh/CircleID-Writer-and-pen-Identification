@@ -34,7 +34,7 @@ def parse_args() -> Config:
     parser.add_argument("--seed",        type=int,   default=cfg.SEED)
     parser.add_argument("--val-frac",    type=float, default=cfg.VAL_FRAC)
     parser.add_argument("--threshold",   type=float, default=cfg.WRITER_UNKNOWN_THRESHOLD)
-    parser.add_argument("--dataset-dir", default=cfg.DATASET_DIR)
+    parser.add_argument("--dataset",     default=cfg.DATASET, help="dataset subfolder under dataset/ (e.g. raw, raw_join)")
     parser.add_argument("--image-dir",   default=cfg.IMAGE_DIR)
     parser.add_argument("--output-dir",  default=cfg.OUTPUT_DIR)
     args = parser.parse_args()
@@ -48,7 +48,7 @@ def parse_args() -> Config:
     cfg.SEED                     = args.seed
     cfg.VAL_FRAC                 = args.val_frac
     cfg.WRITER_UNKNOWN_THRESHOLD = args.threshold
-    cfg.DATASET_DIR              = args.dataset_dir
+    cfg.DATASET                  = args.dataset
     cfg.IMAGE_DIR                = args.image_dir
     cfg.OUTPUT_DIR               = args.output_dir
     cfg.setup()
