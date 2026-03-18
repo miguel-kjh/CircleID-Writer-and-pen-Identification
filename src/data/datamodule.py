@@ -27,7 +27,12 @@ class CircleDataModule(pl.LightningDataModule):
             self.label_map, self.idx_map = generate_label_maps(train_df, cfg.TASK)
             col = "writer_id" if cfg.TASK == "writer" else "pen_id"
             train_df["y"] = train_df[col].astype(str).map(self.label_map).astype(int)
-            train_df, val_df = random_split(train_df, cfg.VAL_FRAC, cfg.SEED)
+            val_path = os.path.join(cfg.DATASET_DIR, "val.csv")
+            if os.path.exists(val_path):
+                val_df = pd.read_csv(val_path)
+                val_df["y"] = val_df[col].astype(str).map(self.label_map).astype(int)
+            else:
+                train_df, val_df = random_split(train_df, cfg.VAL_FRAC, cfg.SEED)
             self._train_ds = CircleDataset(train_df, cfg.IMAGE_DIR, return_label=True,  augment=True,  img_size=cfg.IMG_SIZE)
             self._val_ds   = CircleDataset(val_df,   cfg.IMAGE_DIR, return_label=True,  augment=False, img_size=cfg.IMG_SIZE)
             # Write log.json (backward compat + human readable)

@@ -31,10 +31,10 @@ class Config:
     @property
     def run_dir(self) -> str:
         lr_str = f"{self.LEARNING_RATE:.0e}".replace("e-0", "e-").replace("e+0", "e+")
-        ds_tag = f"_ds{self.DATASET}" if self.DATASET != "raw" else ""
+        ds_tag = f"_ds{self.DATASET.replace('/', '_')}" if self.DATASET != "raw" else ""
         name = (
             f"{self.MODEL}_{self.TASK}{ds_tag}"
-            f"_e{self.EPOCHS}_bs{self.BATCH_SIZE}_lr{lr_str}"
+            f"_e{self.EPOCHS}_bs{self.BATCH_SIZE}_lr{lr_str}" 
             f"_img{self.IMG_SIZE}_seed{self.SEED}"
         )
         return os.path.join(self.OUTPUT_DIR, name)

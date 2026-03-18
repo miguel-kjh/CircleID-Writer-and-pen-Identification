@@ -76,10 +76,14 @@ class CircleIDModule(pl.LightningModule):
         threshold = self.hparams.writer_unknown_threshold
         results = []
         if task == "writer":
+            has_unknown_class = "-1" in idx_map.values()
             probs = F.softmax(logits, dim=1)
             confs, indices = probs.max(dim=1)
             for img_id, conf, idx in zip(image_ids, confs.cpu(), indices.cpu()):
-                label = "-1" if float(conf) < threshold else idx_map[str(int(idx))]
+                if has_unknown_class:
+                    label = idx_map[str(int(idx))]
+                else:
+                    label = "-1" if float(conf) < threshold else idx_map[str(int(idx))]
                 results.append((img_id, label))
         else:
             for img_id, idx in zip(image_ids, logits.argmax(1).cpu()):
