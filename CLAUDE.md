@@ -14,18 +14,20 @@ Two tasks:
 
 ```bash
 # Training
-python train.py                                      # writer task, resnet18, defaults
+python train.py                                                        # writer task, resnet18, defaults
 python train.py --task pen
 python train.py --task writer --model resnet18 --epochs 20 --batch-size 64 --lr 1e-4
 
-# Inference (requires a prior training run)
-python predict.py                                    # writer task, resnet18
+# Inference — must pass the same run-identifying flags as training to resolve run_dir
+python predict.py --task writer --epochs 20 --batch-size 64 --lr 1e-4
 python predict.py --task pen --model resnet18
 
 # Notebook (legacy baseline)
-pip install numpy pandas pillow torch torchvision tqdm
+pip install numpy pandas pillow torch torchvision tqdm pytorch-lightning
 jupyter notebook baseline.ipynb
 ```
+
+`predict.py` accepts the same flags as `train.py` (including `--epochs`, `--lr`, `--seed`, `--val-frac`) because `run_dir` — and therefore the checkpoint path — is derived from all of them via `Config.run_dir`.
 
 ## Data Layout
 
@@ -37,53 +39,68 @@ dataset/
     test.csv               # image_id, image_path (no labels)
     sample_submission.csv  # image_id, writer_id (example format)
   images/                  # PNG handwriting samples
-results/                   # run directories with checkpoints, logs, submission CSVs
+results/                   # run directories: checkpoints, log.json, submission CSVs
 ```
 
-Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to `dataset/` (the `IMAGE_DIR` in `Config`), while CSVs themselves live in `dataset/raw/`.
+Train images use numeric filenames (`00001.png`). Test images use hex-string filenames (`v2_<hash>.png`). `image_path` in each CSV is relative to `dataset/` (`IMAGE_DIR` in `Config`); CSVs live in `dataset/raw/`.
 
 ## Architecture
 
-The codebase is a modular refactor of `baseline.ipynb` into `train.py` / `predict.py` backed by `src/`.
+The codebase uses **PyTorch Lightning** for training and inference, backed by `src/`.
 
 ### Configuration (`src/config.py`)
 
-`Config` is a class with class-level attributes and dynamic `@property` methods:
-- `run_dir` generates a deterministic path like `resnet18_writer_e10_bs128_lr3e-4_img224_seed0/` under `OUTPUT_DIR`
-- `best_ckpt_path` / `ckpt_path` / `log_path` all resolve under `run_dir`
-- `setup()` creates the output directories
+`Config` is a plain class with mutable attributes. Its `@property` methods compute paths:
+- `run_dir` → `{OUTPUT_DIR}/{model}_{task}_e{E}_bs{BS}_lr{lr}_img{S}_seed{seed}/`
+- `best_ckpt_path`, `ckpt_path`, `log_path` all resolve under `run_dir`
+- `setup()` creates `run_dir` on disk
 
-`train.py` and `predict.py` parse CLI args and mutate a `Config` instance before use.
+Both scripts call `parse_args()` which mutates a `Config` instance then calls `cfg.setup()`.
 
 ### Model Registry (`src/models/`)
 
-Models follow a registry pattern:
-- `BaseModel(nn.Module)` requires a `NAME` class attribute
-- `_REGISTRY` in `src/models/__init__.py` maps name → class
-- `build_model(name, num_classes)` is the factory used by both scripts
+- `BaseModel(nn.Module)` — abstract base requiring a `NAME` class attribute
+- `_REGISTRY` in `src/models/__init__.py` maps `name → class`
+- `build_model(name, num_classes)` is the factory used everywhere
 
-To add a new model: subclass `BaseModel`, set `NAME`, add to `_REGISTRY`. No changes needed in `train.py`/`predict.py`.
+To add a new model: subclass `BaseModel`, set `NAME`, import and add to `_REGISTRY`. No changes needed in `train.py`/`predict.py`.
 
-### Training Loop (`src/models/train.py`)
+### Lightning Module (`src/models/lightning_module.py`)
 
-`train_epoch`, `evaluate`, and `predict` are standalone functions (not methods). `predict` applies softmax confidence thresholding for the writer task (below `WRITER_UNKNOWN_THRESHOLD` → predicts `-1`); pen task uses argmax.
+`CircleIDModule(pl.LightningModule)` wraps any `BaseModel`:
+- Constructor takes `net`, `lr`, `task`, `idx_map`, `writer_unknown_threshold`
+- `idx_map` is stored with **string keys** (`{"0": "W01", ...}`) via `save_hyperparameters` for YAML round-trip safety
+- `predict_step` returns `List[(image_id, label)]` per batch; applies softmax thresholding for the writer task
+- `from_checkpoint(ckpt_path, net_builder)` classmethod rebuilds the net from hparams and loads weights
 
 ### Data (`src/data/`)
 
-- `CircleDataset` resolves image paths as `img_root / image_path` from the CSV
-- ImageNet normalization from `ResNet18_Weights.DEFAULT`; train split uses random rotation ±10° augmentation
-- `random_split` is **not** stratified by writer — some writers may be absent from validation
+- `CircleDataset` — resolves `img_root / image_path`; returns `(tensor, label)` or `(tensor, image_id)` depending on `return_label`; ImageNet normalisation from `ResNet18_Weights.DEFAULT`; train split gets random rotation ±10°
+- `CircleDataModule(pl.LightningDataModule)` — `setup("fit")` reads `train.csv`, builds label maps, splits, writes `log.json`; `setup("predict")` reads `test.csv`
+- `random_split` is **not** stratified — some writers may be absent from validation
+- Label maps (`label_map` str→int, `idx_map` int→str) are built from `train.csv` only and written to `log.json` so inference uses identical indices
 
-### Experiment Tracking
+### Training Flow (`train.py`)
 
-wandb is integrated in `train.py` (project: `"circleid"`). Run name mirrors `run_dir`. Metrics logged: `train/loss`, `val/loss`, `val/acc` per epoch, plus `best_val_acc` as a summary.
+1. `dm.setup("fit")` populates `label_map`/`idx_map` before the model is built
+2. `CircleIDModule` is constructed with those maps
+3. `WandbLogger` (project `"circleid"`, run name = `run_dir` basename) + two `ModelCheckpoint` callbacks (`checkpoint_best.ckpt` monitors `val/acc`, `checkpoint.ckpt` saves every epoch)
+4. `trainer.fit(module, datamodule=dm)`
+5. `log.json` is updated with `best_ckpt_path` (Lightning `.ckpt` path)
+6. `trainer.predict(...)` generates the submission CSV inside `run_dir`
+
+### Inference Flow (`predict.py`)
+
+1. Reads `log.json` to get `best_ckpt_path`
+2. `CircleIDModule.from_checkpoint(ckpt_path, net_builder)` restores full module from the Lightning checkpoint
+3. `trainer.predict(module, datamodule=dm, ckpt_path=ckpt_path)` generates submission CSV in `OUTPUT_DIR`
 
 ## Key Design Decisions
 
-- **Unknown writer**: Samples with softmax confidence < `WRITER_UNKNOWN_THRESHOLD` (default 0.9) are predicted as `-1`. The threshold is the primary heuristic to tune.
-- **`additional_train.csv`** contains samples with `writer_id=-1` (genuinely unknown writers) — not used in the current baseline but relevant for training an unknown-writer detector.
-- Label maps (`label_map` str→int, `idx_map` int→str) are built from `train.csv` only and persisted in `log.json` so inference uses the same indices as training.
-- Inference always loads `best_ckpt_path` (best val acc checkpoint), not the last checkpoint.
+- **Unknown writer threshold**: writer samples with softmax confidence < `WRITER_UNKNOWN_THRESHOLD` (default 0.9) are predicted as `-1`. This is the primary heuristic to tune.
+- **`additional_train.csv`** contains samples with `writer_id=-1` (genuinely unknown writers) — not used in the baseline but relevant for training an unknown-writer detector.
+- Checkpoints are Lightning `.ckpt` files (contain hparams + weights). The old `.pt` paths (`checkpoint.pt`, `checkpoint_best.pt`) from pre-Lightning runs are no longer produced.
+- `log.json` is the contract between training and inference: it carries `label_map`, `idx_map`, `writer_unknown_threshold`, and `best_ckpt_path`.
 
 ## Baseline Results
 

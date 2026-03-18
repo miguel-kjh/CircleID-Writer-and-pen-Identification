@@ -2,6 +2,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torchmetrics import F1Score, Precision, Recall
 
 
 class CircleIDModule(pl.LightningModule):
@@ -16,22 +17,56 @@ class CircleIDModule(pl.LightningModule):
                                    "writer_unknown_threshold": writer_unknown_threshold},
                                   ignore=["net"])
 
+        num_classes = len(idx_map)
+        metric_kwargs = dict(task="multiclass", num_classes=num_classes, average="macro")
+        self.train_f1        = F1Score(**metric_kwargs)
+        self.train_precision = Precision(**metric_kwargs)
+        self.train_recall    = Recall(**metric_kwargs)
+        self.val_f1          = F1Score(**metric_kwargs)
+        self.val_precision   = Precision(**metric_kwargs)
+        self.val_recall      = Recall(**metric_kwargs)
+
     def forward(self, x):
         return self.net(x)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        loss = F.cross_entropy(self(x), y)
+        logits = self(x)
+        loss = F.cross_entropy(logits, y)
+        preds = logits.argmax(1)
+        self.train_f1.update(preds, y)
+        self.train_precision.update(preds, y)
+        self.train_recall.update(preds, y)
         self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
+
+    def on_train_epoch_end(self):
+        self.log("train/f1",        self.train_f1.compute())
+        self.log("train/precision", self.train_precision.compute())
+        self.log("train/recall",    self.train_recall.compute())
+        self.train_f1.reset()
+        self.train_precision.reset()
+        self.train_recall.reset()
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
         loss = F.cross_entropy(logits, y)
-        acc = (logits.argmax(1) == y).float().mean()
+        preds = logits.argmax(1)
+        acc = (preds == y).float().mean()
+        self.val_f1.update(preds, y)
+        self.val_precision.update(preds, y)
+        self.val_recall.update(preds, y)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val/acc",  acc,  on_step=False, on_epoch=True, prog_bar=True)
+
+    def on_validation_epoch_end(self):
+        self.log("val/f1",        self.val_f1.compute(), prog_bar=True)
+        self.log("val/precision", self.val_precision.compute())
+        self.log("val/recall",    self.val_recall.compute())
+        self.val_f1.reset()
+        self.val_precision.reset()
+        self.val_recall.reset()
 
     def predict_step(self, batch, batch_idx):
         x, image_ids = batch
