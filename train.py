@@ -6,25 +6,23 @@ Usage:
     python train.py --task writer --epochs 1
 """
 
-import argparse
 import json
 import os
 from pathlib import Path
 
-import pandas as pd
-import torch
-import wandb
-from torch.utils.data import DataLoader
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
 
 from src.config import Config
-from src.data.dataset import CircleDataset
-from src.data.utils import generate_label_maps, random_split
+from src.data.datamodule import CircleDataModule
 from src.models import _REGISTRY, build_model
-from src.models.train import evaluate, predict, train_epoch
+from src.models.lightning_module import CircleIDModule
 from src.utils import set_seeds
 
 
 def parse_args() -> Config:
+    import argparse
     cfg = Config()
     parser = argparse.ArgumentParser(description="Train CircleID baseline")
     parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
@@ -63,33 +61,18 @@ def main():
 
     set_seeds(cfg.SEED)
 
-    train_df = pd.read_csv(os.path.join(cfg.DATASET_DIR, "train.csv"))
-    test_df  = pd.read_csv(os.path.join(cfg.DATASET_DIR, "test.csv"))
-
-    label_map, idx_map = generate_label_maps(train_df, cfg.TASK)
-
-    if cfg.TASK == "writer":
-        train_df["y"] = train_df["writer_id"].astype(str).map(label_map).astype(int)
-    else:
-        train_df["y"] = train_df["pen_id"].astype(str).map(label_map).astype(int)
-
-    train_df, val_df = random_split(train_df, val_frac=cfg.VAL_FRAC, seed=cfg.SEED)
-    print(f"Train samples: {len(train_df)} | Validation samples: {len(val_df)} ({cfg.VAL_FRAC:.2f})")
+    dm = CircleDataModule(cfg)
+    dm.setup("fit")             # populate label_map/idx_map before building module
+    print(f"Train samples: {len(dm._train_ds)} | Validation samples: {len(dm._val_ds)} ({cfg.VAL_FRAC:.2f})")
     if cfg.TASK == "writer":
         print("Note: Validation accuracy is calculated only on known writers.")
 
-    log = {
-        "task": cfg.TASK,
-        "seed": cfg.SEED,
-        "label_map": label_map,
-        "idx_map": idx_map,
-        "writer_unknown_threshold": cfg.WRITER_UNKNOWN_THRESHOLD,
-        "val_frac": cfg.VAL_FRAC,
-    }
-    Path(cfg.log_path).write_text(json.dumps(log, indent=4), encoding="utf-8")
-    print(f"Saved log to {cfg.log_path}")
+    net    = build_model(cfg.MODEL, num_classes=len(dm.label_map))
+    module = CircleIDModule(net=net, lr=cfg.LEARNING_RATE, task=cfg.TASK,
+                            idx_map=dm.idx_map,
+                            writer_unknown_threshold=cfg.WRITER_UNKNOWN_THRESHOLD)
 
-    wandb.init(
+    wandb_logger = WandbLogger(
         project="circleid",
         name=os.path.basename(cfg.run_dir),
         config={
@@ -102,75 +85,56 @@ def main():
             "seed": cfg.SEED,
             "val_frac": cfg.VAL_FRAC,
             "writer_unknown_threshold": cfg.WRITER_UNKNOWN_THRESHOLD,
-            "num_classes": len(label_map),
+            "num_classes": len(dm.label_map),
         },
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = build_model(cfg.MODEL, num_classes=len(label_map)).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.LEARNING_RATE)
-
-    train_ds = CircleDataset(train_df, img_root=cfg.IMAGE_DIR, return_label=True, augment=True, img_size=cfg.IMG_SIZE)
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg.BATCH_SIZE,
-        shuffle=True,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=False,
+    best_ckpt_cb = ModelCheckpoint(
+        dirpath=cfg.run_dir,
+        filename="checkpoint_best",
+        monitor="val/acc",
+        mode="max",
+        save_top_k=1,
+    )
+    last_ckpt_cb = ModelCheckpoint(
+        dirpath=cfg.run_dir,
+        filename="checkpoint",
+        every_n_epochs=1,
+        save_top_k=1,
     )
 
-    val_ds = CircleDataset(val_df, img_root=cfg.IMAGE_DIR, return_label=True, augment=False, img_size=cfg.IMG_SIZE)
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg.BATCH_SIZE,
-        shuffle=False,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=False,
+    trainer = pl.Trainer(
+        max_epochs=cfg.EPOCHS,
+        logger=wandb_logger,
+        callbacks=[best_ckpt_cb, last_ckpt_cb],
+        deterministic=True,
     )
 
-    best_acc = -1.0
-    for epoch in range(cfg.EPOCHS):
-        train_loss = train_epoch(model, train_loader, optimizer, device)
-        val_loss, val_acc = evaluate(model, val_loader, device)
-        print(f"[Epoch {epoch + 1}/{cfg.EPOCHS}] Train loss: {train_loss:.4f} | val loss: {val_loss:.4f} | val acc: {val_acc:.4f}")
+    trainer.fit(module, datamodule=dm)
 
-        wandb.log({"train/loss": train_loss, "val/loss": val_loss, "val/acc": val_acc}, step=epoch + 1)
+    # Update log.json with actual best checkpoint path (Lightning uses .ckpt extension)
+    log = json.loads(Path(cfg.log_path).read_text())
+    log["best_ckpt_path"] = best_ckpt_cb.best_model_path
+    Path(cfg.log_path).write_text(json.dumps(log, indent=4))
 
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save({"model": model.state_dict()}, cfg.best_ckpt_path)
+    wandb_logger.experiment.summary["best_val_acc"] = best_ckpt_cb.best_model_score.item()
 
-    wandb.summary["best_val_acc"] = best_acc
-    wandb.finish()
-
-    torch.save({"model": model.state_dict()}, cfg.ckpt_path)
-    print(f"Saved last checkpoint: {cfg.ckpt_path}")
-    print(f"Saved best checkpoint: {cfg.best_ckpt_path} (best val acc={best_acc:.4f})")
+    print(f"Best checkpoint: {best_ckpt_cb.best_model_path}")
 
     # Generate submission from best checkpoint
-    model_state = torch.load(cfg.best_ckpt_path, map_location=device)
-    model.load_state_dict(model_state["model"])
+    dm.setup("predict")
+    preds = trainer.predict(module, datamodule=dm,
+                            ckpt_path=best_ckpt_cb.best_model_path)
+    rows = [row for batch in preds for row in batch]
 
-    test_ds = CircleDataset(test_df, img_root=cfg.IMAGE_DIR, return_label=False, augment=False, img_size=cfg.IMG_SIZE)
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=cfg.BATCH_SIZE,
-        shuffle=False,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=False,
-    )
-
-    predictions = predict(model, test_loader, device, idx_map, cfg.TASK, cfg.WRITER_UNKNOWN_THRESHOLD)
-
+    import pandas as pd
     name_model = os.path.basename(cfg.run_dir)
-
     if cfg.TASK == "writer":
-        sub = pd.DataFrame(predictions, columns=["image_id", "writer_id"])
-        out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_writer_{name_model}.csv")
+        sub = pd.DataFrame(rows, columns=["image_id", "writer_id"])
+        out_name = os.path.join(cfg.run_dir, f"submission_writer_{name_model}.csv")
     else:
-        sub = pd.DataFrame(predictions, columns=["image_id", "pen_id"])
-        out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_pen_{name_model}.csv")
+        sub = pd.DataFrame(rows, columns=["image_id", "pen_id"])
+        out_name = os.path.join(cfg.run_dir, f"submission_pen_{name_model}.csv")
 
     sub.to_csv(out_name, index=False)
     print(f"Wrote: {out_name}")

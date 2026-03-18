@@ -10,13 +10,12 @@ import json
 import os
 
 import pandas as pd
-import torch
-from torch.utils.data import DataLoader
+import pytorch_lightning as pl
 
 from src.config import Config
-from src.data.dataset import CircleDataset
+from src.data.datamodule import CircleDataModule
 from src.models import _REGISTRY, build_model
-from src.models.train import predict
+from src.models.lightning_module import CircleIDModule
 
 
 def parse_args() -> Config:
@@ -24,8 +23,12 @@ def parse_args() -> Config:
     parser = argparse.ArgumentParser(description="Predict CircleID baseline")
     parser.add_argument("--task",        choices=["writer", "pen"], default=cfg.TASK)
     parser.add_argument("--model",       choices=list(_REGISTRY), default=cfg.MODEL)
+    parser.add_argument("--epochs",      type=int,   default=cfg.EPOCHS)
     parser.add_argument("--batch-size",  type=int,   default=cfg.BATCH_SIZE)
+    parser.add_argument("--lr",          type=float, default=cfg.LEARNING_RATE)
     parser.add_argument("--img-size",    type=int,   default=cfg.IMG_SIZE)
+    parser.add_argument("--seed",        type=int,   default=cfg.SEED)
+    parser.add_argument("--val-frac",    type=float, default=cfg.VAL_FRAC)
     parser.add_argument("--threshold",   type=float, default=cfg.WRITER_UNKNOWN_THRESHOLD)
     parser.add_argument("--dataset-dir", default=cfg.DATASET_DIR)
     parser.add_argument("--image-dir",   default=cfg.IMAGE_DIR)
@@ -34,8 +37,12 @@ def parse_args() -> Config:
 
     cfg.TASK                     = args.task
     cfg.MODEL                    = args.model
+    cfg.EPOCHS                   = args.epochs
     cfg.BATCH_SIZE               = args.batch_size
+    cfg.LEARNING_RATE            = args.lr
     cfg.IMG_SIZE                 = args.img_size
+    cfg.SEED                     = args.seed
+    cfg.VAL_FRAC                 = args.val_frac
     cfg.WRITER_UNKNOWN_THRESHOLD = args.threshold
     cfg.DATASET_DIR              = args.dataset_dir
     cfg.IMAGE_DIR                = args.image_dir
@@ -47,44 +54,33 @@ def parse_args() -> Config:
 def main():
     cfg = parse_args()
 
-    if not os.path.exists(cfg.best_ckpt_path):
-        raise FileNotFoundError(
-            f"Checkpoint not found: {cfg.best_ckpt_path}\n"
-            f"Run `python train.py --task {cfg.TASK}` first."
-        )
-
     with open(cfg.log_path, encoding="utf-8") as f:
         log = json.load(f)
 
-    idx_map = {int(k): v for k, v in log["idx_map"].items()}
-    label_map = log["label_map"]
-    writer_unknown_threshold = log.get("writer_unknown_threshold", cfg.WRITER_UNKNOWN_THRESHOLD)
+    ckpt_path = log.get("best_ckpt_path", cfg.best_ckpt_path)
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(
+            f"Checkpoint not found: {ckpt_path}\n"
+            f"Run `python train.py --task {cfg.TASK}` first."
+        )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = build_model(cfg.MODEL, num_classes=len(label_map)).to(device)
-    model_state = torch.load(cfg.best_ckpt_path, map_location=device)
-    model.load_state_dict(model_state["model"])
-    print(f"Loaded checkpoint: {cfg.best_ckpt_path}")
-
-    test_df = pd.read_csv(os.path.join(cfg.DATASET_DIR, "test.csv"))
-
-    test_ds = CircleDataset(test_df, img_root=cfg.IMAGE_DIR, return_label=False, augment=False, img_size=cfg.IMG_SIZE)
-    test_loader = DataLoader(
-        test_ds,
-        batch_size=cfg.BATCH_SIZE,
-        shuffle=False,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=False,
+    module = CircleIDModule.from_checkpoint(
+        ckpt_path,
+        net_builder=lambda n: build_model(cfg.MODEL, n),
     )
 
-    predictions = predict(model, test_loader, device, idx_map, cfg.TASK, writer_unknown_threshold)
+    dm = CircleDataModule(cfg)
+    dm.setup("predict")
+
+    trainer = pl.Trainer(enable_progress_bar=True, logger=False)
+    preds = trainer.predict(module, datamodule=dm, ckpt_path=ckpt_path)
+    rows = [row for batch in preds for row in batch]
 
     if cfg.TASK == "writer":
-        sub = pd.DataFrame(predictions, columns=["image_id", "writer_id"])
+        sub = pd.DataFrame(rows, columns=["image_id", "writer_id"])
         out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_writer_{cfg.MODEL}.csv")
     else:
-        sub = pd.DataFrame(predictions, columns=["image_id", "pen_id"])
+        sub = pd.DataFrame(rows, columns=["image_id", "pen_id"])
         out_name = os.path.join(cfg.OUTPUT_DIR, f"submission_pen_{cfg.MODEL}.csv")
 
     sub.to_csv(out_name, index=False)
