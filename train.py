@@ -59,7 +59,7 @@ def parse_args() -> Config:
     cfg.OUTPUT_DIR               = args.output_dir
     cfg.setup()
     return cfg
-
+ 
 
 def main():
     cfg = parse_args()
