@@ -1,8 +1,12 @@
 from .base import BaseModel
+from .efficientnet import EfficientNetV2L
+from .mobilenet import MobileNetV3Large
 from .resnet import ResNet18
 
 _REGISTRY: dict[str, type[BaseModel]] = {
     ResNet18.NAME: ResNet18,
+    EfficientNetV2L.NAME: EfficientNetV2L,
+    MobileNetV3Large.NAME: MobileNetV3Large,
 }
 
 
