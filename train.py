@@ -57,6 +57,8 @@ def parse_args() -> Config:
     # Scheduler
     parser.add_argument("--scheduler", choices=["none", "cosine", "linear"], default="none",
                         help="LR scheduler: none | cosine (CosineAnnealingLR) | linear (LinearLR decay to 0)")
+    parser.add_argument("--pretrained-ckpt", type=str, default=None,
+                        help="Path to a Lightning .ckpt file whose backbone weights are loaded before fine-tuning (FC layer skipped due to class count mismatch).")
     args = parser.parse_args()
 
     cfg.TASK                     = args.task
@@ -77,6 +79,7 @@ def parse_args() -> Config:
     cfg.ES_MIN_DELTA             = args.es_min_delta
     cfg.ES_MODE                  = args.es_mode
     cfg.SCHEDULER                = args.scheduler
+    cfg.PRETRAINED_CKPT          = args.pretrained_ckpt
     cfg.setup()
     return cfg
  
@@ -93,7 +96,23 @@ def main():
     if cfg.TASK == "writer":
         print("Note: Validation accuracy is calculated only on known writers.")
 
-    net    = build_model(cfg.MODEL, num_classes=len(dm.label_map))
+    net = build_model(cfg.MODEL, num_classes=len(dm.label_map))
+
+    if cfg.PRETRAINED_CKPT:
+        ckpt = torch.load(cfg.PRETRAINED_CKPT, map_location="cpu")
+        current_shapes = {k: v.shape for k, v in net.state_dict().items()}
+        pretrained_state = {
+            k[len("net."):]: v
+            for k, v in ckpt["state_dict"].items()
+            if k.startswith("net.")
+            and k[len("net."):] in current_shapes
+            and v.shape == current_shapes[k[len("net."):]]
+        }
+        missing, unexpected = net.load_state_dict(pretrained_state, strict=False)
+        print(f"Loaded pretrained backbone from: {cfg.PRETRAINED_CKPT}")
+        print(f"  Missing keys (new FC expected): {missing}")
+        print(f"  Unexpected keys: {unexpected}")
+
     module = CircleIDModule(net=net, lr=cfg.LEARNING_RATE, task=cfg.TASK,
                             idx_map=dm.idx_map,
                             writer_unknown_threshold=cfg.WRITER_UNKNOWN_THRESHOLD,
