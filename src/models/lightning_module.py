@@ -7,14 +7,17 @@ from torchmetrics import F1Score, Precision, Recall
 
 class CircleIDModule(pl.LightningModule):
     def __init__(self, net: nn.Module, lr: float, task: str,
-                 idx_map: dict, writer_unknown_threshold: float = 0.9):
+                 idx_map: dict, writer_unknown_threshold: float = 0.9,
+                 scheduler: str = "none", max_epochs: int = 10):
         super().__init__()
         self.net = net
         # Store idx_map with string keys so YAML serialisation is round-trip safe
         str_idx_map = {str(k): v for k, v in idx_map.items()}
         self.save_hyperparameters({"lr": lr, "task": task,
                                    "idx_map": str_idx_map,
-                                   "writer_unknown_threshold": writer_unknown_threshold},
+                                   "writer_unknown_threshold": writer_unknown_threshold,
+                                   "scheduler": scheduler,
+                                   "max_epochs": max_epochs},
                                   ignore=["net"])
 
         num_classes = len(idx_map)
@@ -91,7 +94,20 @@ class CircleIDModule(pl.LightningModule):
         return results
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.net.parameters(), lr=self.hparams.lr)
+        optimizer = torch.optim.AdamW(self.net.parameters(), lr=self.hparams.lr)
+        scheduler = self.hparams.scheduler
+        if scheduler == "cosine":
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=self.hparams.max_epochs, eta_min=0
+            )
+            return {"optimizer": optimizer, "lr_scheduler": {"scheduler": sched, "interval": "epoch"}}
+        if scheduler == "linear":
+            sched = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=0.0,
+                total_iters=self.hparams.max_epochs
+            )
+            return {"optimizer": optimizer, "lr_scheduler": {"scheduler": sched, "interval": "epoch"}}
+        return optimizer
 
     @classmethod
     def from_checkpoint(cls, ckpt_path: str, net_builder) -> "CircleIDModule":

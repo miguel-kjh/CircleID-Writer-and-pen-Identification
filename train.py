@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from sklearn.metrics import classification_report as skl_report
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
 from src.config import Config
@@ -43,6 +43,20 @@ def parse_args() -> Config:
     parser.add_argument("--dataset",     default=cfg.DATASET, help="dataset subfolder under dataset/ (e.g. raw, raw_join)")
     parser.add_argument("--image-dir",   default=cfg.IMAGE_DIR)
     parser.add_argument("--output-dir",  default=cfg.OUTPUT_DIR)
+    # Early stopping
+    parser.add_argument("--early-stopping", action="store_true", default=False,
+                        help="Enable early stopping")
+    parser.add_argument("--es-monitor",  default="val/acc",
+                        help="Metric to monitor for early stopping (default: val/acc)")
+    parser.add_argument("--es-patience", type=int, default=5,
+                        help="Epochs with no improvement before stopping (default: 5)")
+    parser.add_argument("--es-min-delta", type=float, default=0.001,
+                        help="Minimum improvement to reset patience (default: 0.001)")
+    parser.add_argument("--es-mode", choices=["min", "max"], default="max",
+                        help="Whether to minimize or maximize the monitored metric (default: max)")
+    # Scheduler
+    parser.add_argument("--scheduler", choices=["none", "cosine", "linear"], default="none",
+                        help="LR scheduler: none | cosine (CosineAnnealingLR) | linear (LinearLR decay to 0)")
     args = parser.parse_args()
 
     cfg.TASK                     = args.task
@@ -57,6 +71,12 @@ def parse_args() -> Config:
     cfg.DATASET                  = args.dataset
     cfg.IMAGE_DIR                = args.image_dir
     cfg.OUTPUT_DIR               = args.output_dir
+    cfg.EARLY_STOPPING           = args.early_stopping
+    cfg.ES_MONITOR               = args.es_monitor
+    cfg.ES_PATIENCE              = args.es_patience
+    cfg.ES_MIN_DELTA             = args.es_min_delta
+    cfg.ES_MODE                  = args.es_mode
+    cfg.SCHEDULER                = args.scheduler
     cfg.setup()
     return cfg
  
@@ -76,7 +96,9 @@ def main():
     net    = build_model(cfg.MODEL, num_classes=len(dm.label_map))
     module = CircleIDModule(net=net, lr=cfg.LEARNING_RATE, task=cfg.TASK,
                             idx_map=dm.idx_map,
-                            writer_unknown_threshold=cfg.WRITER_UNKNOWN_THRESHOLD)
+                            writer_unknown_threshold=cfg.WRITER_UNKNOWN_THRESHOLD,
+                            scheduler=cfg.SCHEDULER,
+                            max_epochs=cfg.EPOCHS)
 
     wandb_logger = WandbLogger(
         project="circleid",
@@ -109,10 +131,20 @@ def main():
         save_top_k=1,
     )
 
+    callbacks = [best_ckpt_cb, last_ckpt_cb]
+    if cfg.EARLY_STOPPING:
+        callbacks.append(EarlyStopping(
+            monitor=cfg.ES_MONITOR,
+            patience=cfg.ES_PATIENCE,
+            min_delta=cfg.ES_MIN_DELTA,
+            mode=cfg.ES_MODE,
+            verbose=True,
+        ))
+
     trainer = pl.Trainer(
         max_epochs=cfg.EPOCHS,
         logger=wandb_logger,
-        callbacks=[best_ckpt_cb, last_ckpt_cb],
+        callbacks=callbacks,
         deterministic=True,
     )
 
